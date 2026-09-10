@@ -1,75 +1,38 @@
 # librespot-inferno
 
-One Docker container provides one Spotify Connect player and one Inferno Dante transmitter.
+Spotify Connect to Dante using Librespot + Inferno.
 
-## Signal path
+## Persistent Dante mode
+
+This build keeps the known-good ALSA/Inferno path and adds an optional
+persistent bridge without PulseAudio, PipeWire or ALSA dmix.
 
 ```text
 Spotify Connect
       ↓
-Librespot (ALSA)
+Librespot pipe backend (S32 / 44.1 kHz / stereo)
       ↓
-pcm.dante (ALSA plug; rate/format conversion when required)
+named FIFO
       ↓
-pcm.dante_mono (stereo L/R -> mono)
+FFmpeg bridge (kept running continuously)
       ↓
-pcm.inferno_raw (fixed 48 kHz)
+pcm.dante
       ↓
-Inferno
+ALSA plug + stereo->mono route
       ↓
-Dante TX, 1 channel
+inferno_raw (48 kHz / mono)
+      ↓
+Inferno / Dante TX
 ```
 
-The project is derived from the working `squeezelite-inferno` setup. The Dante/PTP side stays intentionally similar; Squeezelite is replaced with Librespot.
+`KEEP_DANTE_ALIVE=true` enables this mode. FFmpeg owns `pcm.dante`
+continuously, so the Inferno device remains open even when Librespot stops
+or pauses playback. The FIFO is held open across Spotify playback sessions.
+A short digital-silence seed at container startup forces the ALSA/Inferno
+path to open immediately.
 
-## Important settings
+Set `KEEP_DANTE_ALIVE=false` to return to the original direct Librespot ALSA
+mode (`BACKEND=alsa`, `DEVICE=dante`).
 
-- `network_mode: host` is required for reliable Spotify Connect discovery.
-- `DEVICE=dante` must be used, not `inferno_raw`: the `dante` ALSA `plug` device can convert the Librespot stream to Inferno's fixed 48 kHz rate.
-- `INFERNO_BIND_IP=ens11f0` selects the Dante network interface used in the existing setup.
-- `INFERNO_DEVICE_ID`, `INFERNO_PROCESS_ID` and `INFERNO_ALT_PORT` must be unique compared with every other Inferno instance on the same host.
-- `/mnt/app/inferno-shared:/shared` shares the existing `usrvclock` PTP clock with this player.
-- `/data/system-cache` is persisted so Librespot can retain its Spotify Connect system cache.
-
-## Current example identity
-
-The included `docker-compose.yml` uses:
-
-```text
-Spotify device name: Spotify Dante
-Dante device name:   Spotify-Dante
-Device ID:           0000020000009001
-Process ID:          90
-ALT port:            16000
-Dante interface:     ens11f0
-Sample rate:         48000 Hz
-TX channels:         1 (mono)
-```
-
-Change the identity values if any of them are already used by another Inferno player.
-
-## Build / GitHub Container Registry
-
-The included GitHub Actions workflow builds `linux/amd64` and publishes automatically to:
-
-```text
-ghcr.io/<github-user>/librespot-inferno:latest
-```
-
-For the repository `Danit2/librespot-inferno`, this becomes:
-
-```text
-ghcr.io/danit2/librespot-inferno:latest
-```
-
-## TrueNAS
-
-The included `docker-compose.yml` is already adapted to the existing TrueNAS/Inferno layout:
-
-```text
-/mnt/app/inferno-shared:/shared
-ens11f0
-/shared/usrvclock
-```
-
-Start it using the same Custom App / Compose method as the existing Squeezelite Inferno players.
+The included TrueNAS example retains the working `AP_PORT=443` setting.
+`DMIX_IPC_KEY` is no longer used and should be removed.

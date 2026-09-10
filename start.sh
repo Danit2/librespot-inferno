@@ -3,8 +3,7 @@ set -eu
 
 : "${TZ:=Europe/Zurich}"
 
-# Librespot defaults. DEVICE=dante is important: this is the ALSA "plug"
-# device, which can convert Spotify's stream to the fixed Dante rate.
+# Normal mode stays identical to the known-good setup.
 : "${BACKEND:=alsa}"
 : "${DEVICE:=dante}"
 : "${DEVICE_NAME:=Spotify Dante}"
@@ -15,12 +14,16 @@ set -eu
 : "${ENABLE_SYSTEM_CACHE:=Y}"
 : "${ZEROCONF_BACKEND:=libmdns}"
 
-# Export defaults so GioF71's original /app/bin/run-librespot.sh sees them.
-export TZ BACKEND DEVICE DEVICE_NAME DEVICE_TYPE BITRATE FORMAT \
-       INITIAL_VOLUME ENABLE_SYSTEM_CACHE ZEROCONF_BACKEND
+# Optional persistent Dante mode.
+# Instead of opening Inferno directly from Librespot, Librespot writes raw
+# S32/44.1-kHz stereo to a FIFO. FFmpeg owns the existing ALSA "dante"
+# device permanently. This keeps Inferno (and therefore the Dante device)
+# open between Spotify playback sessions.
+: "${KEEP_DANTE_ALIVE:=false}"
+: "${SPOTIFY_PIPE_RATE:=44100}"
+: "${FFMPEG_LOGLEVEL:=warning}"
 
-# Inferno / Dante settings. Old and new variable names are supported,
-# matching the existing squeezelite-inferno container as closely as possible.
+# Inferno / Dante settings.
 DANTE_NAME="${DANTE_NAME:-${INFERNO_NAME:-${DEVICE_NAME}}}"
 BIND_IP="${BIND_IP:-${INFERNO_BIND_IP:-}}"
 SAMPLE_RATE="${SAMPLE_RATE:-${INFERNO_SAMPLE_RATE:-48000}}"
@@ -35,6 +38,7 @@ TX_LATENCY_NS="${TX_LATENCY_NS:-${INFERNO_TX_LATENCY_NS:-10000000}}"
 RX_LATENCY_NS="${RX_LATENCY_NS:-${INFERNO_RX_LATENCY_NS:-10000000}}"
 DEVICE_ID="${DEVICE_ID:-${INFERNO_DEVICE_ID:-}}"
 WAIT_FOR_CLOCK="${WAIT_FOR_CLOCK:-true}"
+SPOTIFY_PIPE_PATH="${SPOTIFY_PIPE_PATH:-${TMPDIR}/librespot.raw}"
 
 if [ -z "${BIND_IP}" ]; then
     echo "FEHLER: BIND_IP oder INFERNO_BIND_IP ist nicht gesetzt."
@@ -94,13 +98,10 @@ ${DEVICE_ID_LINE}
 }
 EOF_ALSA
 
-echo "Verwendete /etc/asound.conf:"
-cat /etc/asound.conf
-
 echo
 echo "===== Spotify / Dante ====="
 echo "Spotify Name:      ${DEVICE_NAME}"
-echo "Librespot Backend: ${BACKEND}"
+echo "Configured Backend:${BACKEND}"
 echo "ALSA Device:       ${DEVICE}"
 echo "Dante Name:        ${DANTE_NAME}"
 echo "Sample Rate:       ${SAMPLE_RATE}"
@@ -110,6 +111,7 @@ echo "RX Channels:       ${RX_CHANNELS}"
 echo "Process ID:        ${PROCESS_ID}"
 echo "ALT Port:          ${ALT_PORT}"
 echo "Clock Path:        ${CLOCK_PATH}"
+echo "Keep Dante alive:  ${KEEP_DANTE_ALIVE}"
 echo "==========================="
 echo
 
@@ -131,9 +133,92 @@ if [ "${WAIT_FOR_CLOCK}" = "true" ]; then
     sleep "${CLOCK_STARTUP_DELAY}"
 fi
 
-echo "Starte Librespot..."
+# Direct mode: exactly the old working ALSA behavior.
+if [ "${KEEP_DANTE_ALIVE}" != "true" ]; then
+    echo "Starte Librespot direkt ueber ALSA..."
+    export TZ BACKEND DEVICE DEVICE_NAME DEVICE_TYPE BITRATE FORMAT \
+           INITIAL_VOLUME ENABLE_SYSTEM_CACHE ZEROCONF_BACKEND
+    cd /app/bin
+    exec /app/bin/run-librespot.sh
+fi
 
-# Keep all Spotify Connect, cache and Zeroconf handling from the upstream
-# giof71/librespot image.
+# Persistent mode. Librespot's pipe backend supplies raw Spotify PCM; FFmpeg
+# stays alive and owns ALSA dante continuously. Keeping FD 9 open read/write
+# prevents EOF when Librespot closes the FIFO on pause/stop.
+echo "Starte persistenten ALSA-Dante-Bridge..."
+
+rm -f "${SPOTIFY_PIPE_PATH}"
+mkfifo "${SPOTIFY_PIPE_PATH}"
+chmod 0666 "${SPOTIFY_PIPE_PATH}"
+
+# Open both ends so neither FFmpeg nor Librespot blocks waiting for the other
+# and FFmpeg does not see EOF between Spotify playback sessions.
+exec 9<>"${SPOTIFY_PIPE_PATH}"
+
+ffmpeg \
+    -nostdin \
+    -hide_banner \
+    -loglevel "${FFMPEG_LOGLEVEL}" \
+    -f s32le \
+    -ar "${SPOTIFY_PIPE_RATE}" \
+    -ac 2 \
+    -i "${SPOTIFY_PIPE_PATH}" \
+    -map 0:a:0 \
+    -c:a pcm_s32le \
+    -ar "${SPOTIFY_PIPE_RATE}" \
+    -ac 2 \
+    -f alsa \
+    dante &
+BRIDGE_PID=$!
+
+# Feed 100 ms of digital silence once. This forces FFmpeg to initialize and
+# open the ALSA dante/inferno device immediately at container startup. After
+# that FFmpeg remains connected even while the FIFO is idle.
+SEED_BYTES=$((SPOTIFY_PIPE_RATE * 2 * 4 / 10))
+dd if=/dev/zero bs="${SEED_BYTES}" count=1 >&9 2>/dev/null || true
+sleep 1
+
+if ! kill -0 "${BRIDGE_PID}" 2>/dev/null; then
+    echo "FEHLER: Persistenter ALSA-Dante-Bridge ist beim Start beendet worden."
+    wait "${BRIDGE_PID}" 2>/dev/null || true
+    exit 1
+fi
+
+echo "ALSA-Dante-Bridge aktiv (PID ${BRIDGE_PID})."
+echo "Inferno bleibt jetzt auch ohne Spotify-Wiedergabe geoeffnet."
+
+# For Librespot only, switch to the officially supported pipe backend.
+# All Spotify Connect/cache/AP/Zeroconf logic still comes from GioF71's
+# original run-librespot.sh. AP_PORT=443 etc. remain untouched.
+BACKEND=pipe
+DEVICE="${SPOTIFY_PIPE_PATH}"
+FORMAT=S32
+export TZ BACKEND DEVICE DEVICE_NAME DEVICE_TYPE BITRATE FORMAT \
+       INITIAL_VOLUME ENABLE_SYSTEM_CACHE ZEROCONF_BACKEND
+
+LIBRESPOT_PID=""
+cleanup() {
+    set +e
+    if [ -n "${LIBRESPOT_PID}" ]; then
+        kill "${LIBRESPOT_PID}" 2>/dev/null || true
+    fi
+    if [ -n "${BRIDGE_PID:-}" ]; then
+        kill "${BRIDGE_PID}" 2>/dev/null || true
+    fi
+    exec 9>&- 2>/dev/null || true
+    rm -f "${SPOTIFY_PIPE_PATH}" 2>/dev/null || true
+}
+trap 'cleanup; exit 143' INT TERM HUP
+
+echo "Starte Librespot (Pipe -> permanenter ALSA-Dante-Bridge)..."
 cd /app/bin
-exec /app/bin/run-librespot.sh
+/app/bin/run-librespot.sh &
+LIBRESPOT_PID=$!
+
+set +e
+wait "${LIBRESPOT_PID}"
+RC=$?
+set -e
+
+cleanup
+exit "${RC}"
