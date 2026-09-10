@@ -24,14 +24,15 @@ RUN mkdir /out && \
 
 
 # Librespot runtime including Spotify Connect / Zeroconf handling.
-# FFmpeg is used only as a lightweight persistent pipe -> ALSA bridge when
-# KEEP_DANTE_ALIVE=true. No PulseAudio/PipeWire/dmix is used.
+# A tiny paced FIFO -> ALSA bridge keeps Inferno open when KEEP_DANTE_ALIVE=true.
+# No PulseAudio/PipeWire/dmix/FFmpeg buffering is used.
 FROM giof71/librespot:latest
 
 USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
+    alsa-utils \
+    python3 \
     tini \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
@@ -51,8 +52,9 @@ RUN set -eux; \
 
 COPY asound.conf /etc/asound.conf
 COPY start.sh /usr/local/bin/start.sh
+COPY pcm_keepalive.py /usr/local/bin/pcm_keepalive.py
 
-RUN chmod +x /usr/local/bin/start.sh
+RUN chmod +x /usr/local/bin/start.sh /usr/local/bin/pcm_keepalive.py
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/usr/local/bin/start.sh"]

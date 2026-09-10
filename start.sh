@@ -142,50 +142,33 @@ if [ "${KEEP_DANTE_ALIVE}" != "true" ]; then
     exec /app/bin/run-librespot.sh
 fi
 
-# Persistent mode. Librespot's pipe backend supplies raw Spotify PCM; FFmpeg
-# stays alive and owns ALSA dante continuously. Keeping FD 9 open read/write
-# prevents EOF when Librespot closes the FIFO on pause/stop.
-echo "Starte persistenten ALSA-Dante-Bridge..."
+# Persistent mode. Librespot writes raw S32/44.1-kHz stereo to a FIFO.
+# A small real-time bridge owns ALSA "dante" permanently. It reads only at
+# audio-device speed and inserts digital silence whenever Spotify is paused,
+# stopped or disconnected. This prevents the large read-ahead that occurred
+# with FFmpeg while keeping Inferno continuously open.
+echo "Starte getakteten persistenten ALSA-Dante-Bridge..."
 
 rm -f "${SPOTIFY_PIPE_PATH}"
 mkfifo "${SPOTIFY_PIPE_PATH}"
 chmod 0666 "${SPOTIFY_PIPE_PATH}"
 
-# Open both ends so neither FFmpeg nor Librespot blocks waiting for the other
-# and FFmpeg does not see EOF between Spotify playback sessions.
-exec 9<>"${SPOTIFY_PIPE_PATH}"
+export SPOTIFY_PIPE_PATH
+export KEEPALIVE_ALSA_DEVICE="${DEVICE}"
+export SPOTIFY_PIPE_RATE
 
-ffmpeg \
-    -nostdin \
-    -hide_banner \
-    -loglevel "${FFMPEG_LOGLEVEL}" \
-    -f s32le \
-    -ar "${SPOTIFY_PIPE_RATE}" \
-    -ac 2 \
-    -i "${SPOTIFY_PIPE_PATH}" \
-    -map 0:a:0 \
-    -c:a pcm_s32le \
-    -ar "${SPOTIFY_PIPE_RATE}" \
-    -ac 2 \
-    -f alsa \
-    dante &
+/usr/local/bin/pcm_keepalive.py &
 BRIDGE_PID=$!
-
-# Feed 100 ms of digital silence once. This forces FFmpeg to initialize and
-# open the ALSA dante/inferno device immediately at container startup. After
-# that FFmpeg remains connected even while the FIFO is idle.
-SEED_BYTES=$((SPOTIFY_PIPE_RATE * 2 * 4 / 10))
-dd if=/dev/zero bs="${SEED_BYTES}" count=1 >&9 2>/dev/null || true
 sleep 1
 
 if ! kill -0 "${BRIDGE_PID}" 2>/dev/null; then
-    echo "FEHLER: Persistenter ALSA-Dante-Bridge ist beim Start beendet worden."
+    echo "FEHLER: Getakteter ALSA-Dante-Bridge ist beim Start beendet worden."
     wait "${BRIDGE_PID}" 2>/dev/null || true
     exit 1
 fi
 
 echo "ALSA-Dante-Bridge aktiv (PID ${BRIDGE_PID})."
-echo "Inferno bleibt jetzt auch ohne Spotify-Wiedergabe geoeffnet."
+echo "Inferno bleibt offen; bei Spotify-Pause/Stop wird sofort Stille gesendet."
 
 # For Librespot only, switch to the officially supported pipe backend.
 # All Spotify Connect/cache/AP/Zeroconf logic still comes from GioF71's
@@ -205,7 +188,6 @@ cleanup() {
     if [ -n "${BRIDGE_PID:-}" ]; then
         kill "${BRIDGE_PID}" 2>/dev/null || true
     fi
-    exec 9>&- 2>/dev/null || true
     rm -f "${SPOTIFY_PIPE_PATH}" 2>/dev/null || true
 }
 trap 'cleanup; exit 143' INT TERM HUP
