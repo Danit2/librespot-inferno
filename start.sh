@@ -57,9 +57,13 @@ PULSE_HOME="$(getent passwd "${PUID}" | cut -d: -f6)"
 PULSE_RUNTIME="/run/user/${PUID}"
 PULSE_SOCKET="${PULSE_RUNTIME}/pulse/native"
 
-mkdir -p "${TMPDIR}" "${PULSE_RUNTIME}/pulse" "${PULSE_HOME}/.local/state/inferno_aoip"
+mkdir -p "${TMPDIR}" "${PULSE_RUNTIME}/pulse" "${PULSE_HOME}/.local/state/inferno_aoip" "${PULSE_HOME}/.config/pulse"
 chown -R "${PUID}:${PGID}" "${TMPDIR}" "${PULSE_RUNTIME}" "${PULSE_HOME}/.local"
 chmod 700 "${PULSE_RUNTIME}"
+
+# A stale socket file can survive an unclean container restart. Remove it before
+# starting our private PulseAudio instance.
+rm -f "${PULSE_SOCKET}"
 
 DEVICE_ID_LINE=""
 if [ -n "${DEVICE_ID}" ]; then
@@ -100,7 +104,6 @@ EOF_ALSA
 # Therefore module-alsa-sink keeps inferno_raw open even with no Spotify audio.
 mkdir -p /etc/pulse
 cat > /etc/pulse/dante.pa <<EOF_PULSE
-.nofail
 load-module module-native-protocol-unix socket=${PULSE_SOCKET} auth-anonymous=1
 load-module module-alsa-sink sink_name=dante_sink device=inferno_raw rate=${SAMPLE_RATE} format=s32le channels=1 channel_map=mono tsched=0
 set-default-sink dante_sink
@@ -114,6 +117,8 @@ default-sample-rate = ${SAMPLE_RATE}
 alternate-sample-rate = ${SAMPLE_RATE}
 default-sample-channels = 1
 resample-method = speex-float-5
+realtime-scheduling = no
+high-priority = no
 EOF_DAEMON
 
 # The upstream launcher creates this too, but write it in advance so the
@@ -165,7 +170,7 @@ echo "Starte PulseAudio -> Inferno dauerhaft..."
 # PulseAudio backend. No suspend-on-idle module is loaded, so dante_sink owns
 # inferno_raw for the full lifetime of the container.
 su -s /bin/sh "${PULSE_USER}" -c \
-    "HOME='${PULSE_HOME}' XDG_RUNTIME_DIR='${PULSE_RUNTIME}' TMPDIR='${TMPDIR}' pulseaudio --daemonize=no --exit-idle-time=-1 --log-target=stderr --log-level=notice --file=/etc/pulse/dante.pa" &
+    "HOME='${PULSE_HOME}' XDG_RUNTIME_DIR='${PULSE_RUNTIME}' TMPDIR='${TMPDIR}' pulseaudio -n --daemonize=no --exit-idle-time=-1 --log-target=stderr --log-level=notice --file=/etc/pulse/dante.pa" &
 PULSE_PID=$!
 
 # Wait up to 10 seconds for the PulseAudio socket and sink.

@@ -16,6 +16,7 @@ services:
       INITIAL_VOLUME: '100'
       ENABLE_SYSTEM_CACHE: 'Y'
       ZEROCONF_BACKEND: libmdns
+      ZEROCONF_INTERFACE: '10.22.232.201'
       PUID: '1000'
       PGID: '1000'
 
@@ -24,7 +25,7 @@ services:
       CLOCK_SOCKET: /shared/usrvclock
       CLOCK_STARTUP_DELAY: '20'
       INFERNO_ALT_PORT: '15800'
-      INFERNO_BIND_IP: '169.254.10.19'
+      INFERNO_BIND_IP: '169.254.1.19'
       INFERNO_CLOCK_PATH: /shared/usrvclock
       INFERNO_DEVICE_ID: '0000020000001081'
       INFERNO_NAME: Spotify-Dante

@@ -36,7 +36,7 @@ virtual Dante players.
 
 The example compose uses:
 
-- Dante IP: `169.254.10.19`
+- Dante IP: `169.254.1.19`
 - Device ID: `0000020000001081`
 - Process ID: `90`
 - Alt port: `15800`
@@ -44,3 +44,12 @@ The example compose uses:
 - TX channels: `1`
 
 Adjust the IP if your final Dante alias plan differs.
+
+
+## PulseAudio startup detail
+
+The private PulseAudio instance is started with `-n -F /etc/pulse/dante.pa`.
+`-n` is essential: without it PulseAudio also loads the system `default.pa`,
+which creates a second native UNIX protocol socket and causes `Address already in use`
+and cookie authentication failures. The startup script also removes a stale socket
+path before launching PulseAudio.
