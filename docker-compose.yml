@@ -18,6 +18,8 @@ services:
       INITIAL_VOLUME: '100'
       ENABLE_SYSTEM_CACHE: 'Y'
       ZEROCONF_BACKEND: libmdns
+      KEEP_DANTE_ALIVE: 'true'
+      DMIX_IPC_KEY: '59090'
 
       # Inferno / Dante
       CLOCK_PATH: /shared/usrvclock

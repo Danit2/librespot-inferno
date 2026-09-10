@@ -32,6 +32,7 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tini \
     tzdata \
+    alsa-utils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=inferno-builder \
@@ -52,5 +53,5 @@ COPY start.sh /usr/local/bin/start.sh
 
 RUN chmod +x /usr/local/bin/start.sh
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
 CMD ["/usr/local/bin/start.sh"]

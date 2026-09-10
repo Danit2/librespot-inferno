@@ -15,6 +15,10 @@ set -eu
 : "${ENABLE_SYSTEM_CACHE:=Y}"
 : "${ZEROCONF_BACKEND:=libmdns}"
 
+# Keep Inferno/Dante advertised even while Librespot is idle.
+: "${KEEP_DANTE_ALIVE:=true}"
+: "${DMIX_IPC_KEY:=59090}"
+
 # Export defaults so GioF71's original /app/bin/run-librespot.sh sees them.
 export TZ BACKEND DEVICE DEVICE_NAME DEVICE_TYPE BITRATE FORMAT \
        INITIAL_VOLUME ENABLE_SYSTEM_CACHE ZEROCONF_BACKEND
@@ -41,6 +45,12 @@ if [ -z "${BIND_IP}" ]; then
     exit 1
 fi
 
+if [ "${TX_CHANNELS}" -ne 1 ]; then
+    echo "FEHLER: Dieses Image ist aktuell fuer genau einen Dante-TX-Kanal (Mono) ausgelegt."
+    echo "       INFERNO_TX_CHANNELS muss 1 sein."
+    exit 1
+fi
+
 DEVICE_ID_LINE=""
 if [ -n "${DEVICE_ID}" ]; then
     DEVICE_ID_LINE="    DEVICE_ID \"${DEVICE_ID}\""
@@ -48,6 +58,8 @@ fi
 
 echo "Erzeuge /etc/asound.conf..."
 cat > /etc/asound.conf <<EOF_ALSA
+# Librespot opens this device. The plug layer handles Spotify's input format
+# and sample rate and feeds the stereo->mono route below.
 pcm.dante {
     type plug
     slave.pcm "dante_mono"
@@ -58,14 +70,42 @@ pcm.dante {
     }
 }
 
+# Stereo L/R -> one Dante channel. Its slave is dmix, not Inferno directly,
+# so Librespot and the permanent silence keepalive can share the transmitter.
 pcm.dante_mono {
     type route
-    slave.pcm "inferno_raw"
+    slave.pcm "dante_mix"
     slave.channels 1
 
-    # Spotify stereo L/R -> Dante mono (50 % + 50 %)
     ttable.0.0 0.5
     ttable.1.0 0.5
+}
+
+# Shared, fixed-format playback PCM. The first client opens inferno_raw and
+# dmix keeps that slave open while at least one client remains connected.
+pcm.dante_mix {
+    type dmix
+    ipc_key ${DMIX_IPC_KEY}
+    ipc_key_add_uid true
+    ipc_perm 0666
+
+    slave {
+        pcm "inferno_raw"
+        format S32_LE
+        rate ${SAMPLE_RATE}
+        channels 1
+        period_time 10000
+        buffer_time 40000
+    }
+
+    bindings {
+        0 0
+    }
+
+    hint {
+        show on
+        description "Shared 48 kHz mono Dante mixer"
+    }
 }
 
 pcm.inferno_raw {
@@ -110,6 +150,8 @@ echo "RX Channels:       ${RX_CHANNELS}"
 echo "Process ID:        ${PROCESS_ID}"
 echo "ALT Port:          ${ALT_PORT}"
 echo "Clock Path:        ${CLOCK_PATH}"
+echo "Dante Keepalive:   ${KEEP_DANTE_ALIVE}"
+echo "DMIX IPC key:      ${DMIX_IPC_KEY}"
 echo "==========================="
 echo
 
@@ -129,6 +171,30 @@ if [ "${WAIT_FOR_CLOCK}" = "true" ]; then
 
     echo "Warte ${CLOCK_STARTUP_DELAY}s auf PTP-Sync..."
     sleep "${CLOCK_STARTUP_DELAY}"
+fi
+
+if [ "${KEEP_DANTE_ALIVE}" = "true" ]; then
+    echo "Starte permanenten Dante-Silence-Keepalive..."
+
+    # /dev/zero never reaches EOF. This keeps one dmix client open forever,
+    # which in turn keeps inferno_raw open and the Dante device advertised.
+    aplay -q \
+        -D dante_mix \
+        -t raw \
+        -f S32_LE \
+        -r "${SAMPLE_RATE}" \
+        -c 1 \
+        /dev/zero &
+
+    KEEPALIVE_PID=$!
+    sleep 1
+
+    if ! kill -0 "${KEEPALIVE_PID}" 2>/dev/null; then
+        echo "FEHLER: Dante-Silence-Keepalive konnte nicht gestartet werden."
+        exit 1
+    fi
+
+    echo "Dante-Silence-Keepalive aktiv (PID ${KEEPALIVE_PID})."
 fi
 
 echo "Starte Librespot..."
