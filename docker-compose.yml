@@ -7,27 +7,26 @@ services:
     restart: unless-stopped
 
     environment:
-      # Spotify Connect
+      # Spotify Connect / Librespot
       TZ: Europe/Zurich
-      DEVICE_NAME: Feuer und Eis
+      BACKEND: alsa
+      DEVICE: dante
+      DEVICE_NAME: Spotify Dante
       DEVICE_TYPE: speaker
       BITRATE: '320'
       FORMAT: S32
       INITIAL_VOLUME: '100'
       ENABLE_SYSTEM_CACHE: 'Y'
       ZEROCONF_BACKEND: libmdns
-      ZEROCONF_INTERFACE: '10.22.232.201'
-      PUID: '1000'
-      PGID: '1000'
 
       # Inferno / Dante
       CLOCK_PATH: /shared/usrvclock
       CLOCK_SOCKET: /shared/usrvclock
       CLOCK_STARTUP_DELAY: '20'
-      INFERNO_ALT_PORT: '15800'
-      INFERNO_BIND_IP: '169.254.1.19'
+      INFERNO_ALT_PORT: '16000'
+      INFERNO_BIND_IP: ens11f0
       INFERNO_CLOCK_PATH: /shared/usrvclock
-      INFERNO_DEVICE_ID: '0000020000001081'
+      INFERNO_DEVICE_ID: '0000020000009001'
       INFERNO_NAME: Spotify-Dante
       INFERNO_PROCESS_ID: '90'
       INFERNO_RX_CHANNELS: '0'
@@ -49,9 +48,9 @@ services:
 
     volumes:
       - /mnt/app/inferno-shared:/shared
-      - inferno-state-spotify:/home/librespot-user/.local/state/inferno_aoip
+      - inferno-state-spotify:/root/.local/state/inferno_aoip
       - spotify-system-cache:/data/system-cache
 
 volumes:
-  inferno-state-spotify: {}
-  spotify-system-cache: {}
+  inferno-state-spotify:
+  spotify-system-cache:
